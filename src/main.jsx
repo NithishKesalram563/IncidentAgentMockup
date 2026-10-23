@@ -98,13 +98,64 @@ function persistSessionValue(key, value) {
   }
 }
 
+function readThemePreference() {
+  try {
+    const preference = window.localStorage.getItem('siteguard.theme');
+    if (preference === 'dark' || preference === 'light') return preference === 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  } catch (error) {
+    console.error('Unable to read the saved theme preference.', error);
+    return false;
+  }
+}
+
+function persistThemePreference(dark) {
+  try {
+    window.localStorage.setItem('siteguard.theme', dark ? 'dark' : 'light');
+  } catch (error) {
+    console.error('Unable to save the theme preference.', error);
+  }
+}
+
+function suggestedFollowUpAction(incident) {
+  if (incident.asset === 'CV-04') return 'Review the CV-04 drive-end bearing inspection, lubrication, and vibration records; document verified findings and any recommended corrective action.';
+  if (incident.asset === 'EX-12') return 'Review the hose coupling inspection and pressure-test records; document verified findings and any required follow-up check.';
+  if (incident.asset === 'SITE-ROUTE-03') return 'Review the near-miss account and vehicle-route controls; document verified findings and any agreed follow-up.';
+  if (incident.asset === 'SC-01') return 'Review the guard inspection and repair records; document the verified condition and any required follow-up check.';
+  return `Review the ${incident.asset} inspection and maintenance records; document verified findings and any recommended action.`;
+}
+
+function isUnassignedFollowUp(task) {
+  return !task.owner?.trim() || task.owner.trim().toLowerCase() === 'unassigned';
+}
+
+function createFollowUpTasks(incidents) {
+  return incidents.map((incident) => ({
+    id: `follow-up-${incident.id}`,
+    incidentId: incident.id,
+    action: suggestedFollowUpAction(incident),
+    owner: incident.owner,
+    dueDate: '',
+    status: 'Not scheduled',
+    effectiveness: 'Not verified',
+  }));
+}
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 const navItems = [
   { id: 'dashboard', label: 'Overview', icon: 'grid' },
   { id: 'register', label: 'Incident register', icon: 'list' },
+  { id: 'follow-up', label: 'Follow-up tracker', icon: 'check' },
   { id: 'recurrence', label: 'Recurrence intelligence', icon: 'repeat' },
   { id: 'assistant', label: 'AI Assistant', icon: 'assistant' },
 ];
-const pageIds = new Set(['dashboard', 'register', 'recurrence', 'assistant', 'report', 'analyzing', 'analysis']);
+const pageIds = new Set(['dashboard', 'register', 'follow-up', 'recurrence', 'assistant', 'report', 'analyzing', 'analysis']);
 
 function pageFromLocation() {
   const page = window.location.hash.slice(1).split('/')[0];
@@ -159,6 +210,7 @@ function Icon({ name, size = 18 }) {
     arrow: <><path d="M7 17 17 7M7 7h10v10" /></>,
     clip: <><path d="m21.4 11.6-8.5 8.5a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7L9.9 17.5a2 2 0 0 1-2.8-2.8l8.5-8.5" /></>,
     sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></>,
+    moon: <><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     assistant: <><path d="M12 3v3m-5 2h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3Z" /><path d="M9 13h.01M15 13h.01M9 17h6" /><path d="M3 12H2m20 0h-1" /></>,
   };
@@ -258,6 +310,17 @@ function answerKnowledgeBase(question, incidents) {
 
 function App() {
   const [incidents, setIncidents] = useState(() => readSessionValue('siteguard.incidents', seedIncidents));
+  const [followUps, setFollowUps] = useState(() => {
+    const saved = readSessionValue('siteguard.followUps', null);
+    return Array.isArray(saved)
+      ? saved.map((task) => {
+        const incident = incidents.find((item) => item.id === task.incidentId);
+        return incident && task.action === 'Review incident and document follow-up outcome'
+          ? { ...task, action: suggestedFollowUpAction(incident) }
+          : task;
+      })
+      : createFollowUpTasks(incidents);
+  });
   const [page, setPage] = useState(pageFromLocation);
   const [analysisIncidentId, setAnalysisIncidentId] = useState(incidentIdFromLocation);
   const [analysisTab, setAnalysisTab] = useState('history');
@@ -273,7 +336,7 @@ function App() {
   const [attachmentPreview, setAttachmentPreview] = useState('');
   const [reviewDialog, setReviewDialog] = useState(null);
   const [selected, setSelected] = useState(null);
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(readThemePreference);
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All categories');
   const [severityFilter, setSeverityFilter] = useState('All severities');
@@ -284,6 +347,13 @@ function App() {
   const [recurrenceSort, setRecurrenceSort] = useState('Most reports');
   const [selectedRecurrenceKey, setSelectedRecurrenceKey] = useState('');
   const [recurrenceQuery, setRecurrenceQuery] = useState('');
+  const [followUpSiteFilter, setFollowUpSiteFilter] = useState('All sites');
+  const [followUpOwnerFilter, setFollowUpOwnerFilter] = useState('All owners');
+  const [followUpStatusFilter, setFollowUpStatusFilter] = useState('All statuses');
+  const [followUpDueFilter, setFollowUpDueFilter] = useState('All due dates');
+  const [showFollowUpForm, setShowFollowUpForm] = useState(false);
+  const [newFollowUpIncidentId, setNewFollowUpIncidentId] = useState(incidents[0]?.id || '');
+  const [newFollowUpAction, setNewFollowUpAction] = useState(incidents[0] ? suggestedFollowUpAction(incidents[0]) : '');
   const [analysis, setAnalysis] = useState(null);
   const [assistantMessages, setAssistantMessages] = useState([]);
   const [assistantQuestion, setAssistantQuestion] = useState('');
@@ -323,11 +393,20 @@ function App() {
   }, [reportDirty]);
 
   useEffect(() => persistSessionValue('siteguard.incidents', incidents), [incidents]);
+  useEffect(() => {
+    setFollowUps((current) => {
+      const existingIds = new Set(current.map((task) => task.incidentId));
+      const missing = incidents.filter((incident) => !existingIds.has(incident.id));
+      return missing.length ? [...current, ...createFollowUpTasks(missing)] : current;
+    });
+  }, [incidents]);
+  useEffect(() => persistSessionValue('siteguard.followUps', followUps), [followUps]);
   useEffect(() => persistSessionValue('siteguard.suggestionReviews', suggestionReviews), [suggestionReviews]);
   useEffect(() => persistSessionValue('siteguard.statusHistory', statusHistory), [statusHistory]);
   useEffect(() => persistSessionValue('siteguard.reportDraft', reportDraft), [reportDraft]);
   useEffect(() => persistSessionValue('siteguard.reviewerName', reviewerName), [reviewerName]);
   useEffect(() => persistSessionValue('siteguard.compactRegister', compactRegister), [compactRegister]);
+  useEffect(() => persistThemePreference(dark), [dark]);
   useEffect(() => () => {
     if (attachmentPreview) URL.revokeObjectURL(attachmentPreview);
   }, [attachmentPreview]);
@@ -475,6 +554,36 @@ function App() {
   }, [recurringMatches, incidents, recurrenceRange, recurrenceQuery, recurrenceSiteFilter, recurrenceSeverityFilter, recurrenceSort]);
   const selectedRecurrence = recurrenceWorklist.find(({ key }) => key === selectedRecurrenceKey) || recurrenceWorklist[0] || null;
 
+  const followUpSites = useMemo(() => [...new Set(incidents.map((incident) => incident.site))].sort(), [incidents]);
+  const followUpOwners = useMemo(() => [...new Set(followUps.map((task) => isUnassignedFollowUp(task) ? 'Unassigned' : task.owner.trim()))].sort(), [followUps]);
+  const filteredFollowUps = useMemo(() => {
+    const today = localDateKey();
+    const dueSoon = new Date();
+    dueSoon.setDate(dueSoon.getDate() + 7);
+    const dueSoonKey = localDateKey(dueSoon);
+    return followUps
+      .map((task) => ({ task, incident: incidents.find((item) => item.id === task.incidentId) }))
+      .filter(({ task, incident }) => {
+        if (!incident) return false;
+        const overdue = task.status !== 'Complete' && task.dueDate && task.dueDate < today;
+        const dueSoonTask = task.status !== 'Complete' && task.dueDate && task.dueDate >= today && task.dueDate <= dueSoonKey;
+        return (followUpSiteFilter === 'All sites' || incident.site === followUpSiteFilter)
+          && (followUpOwnerFilter === 'All owners' || (followUpOwnerFilter === 'Unassigned' ? isUnassignedFollowUp(task) : task.owner === followUpOwnerFilter))
+          && (followUpStatusFilter === 'All statuses' || task.status === followUpStatusFilter)
+          && (followUpDueFilter === 'All due dates'
+            || (followUpDueFilter === 'Overdue' && overdue)
+            || (followUpDueFilter === 'Due in 7 days' && dueSoonTask)
+            || (followUpDueFilter === 'No due date' && !task.dueDate)
+            || (followUpDueFilter === 'Complete' && task.status === 'Complete'));
+      })
+      .sort((a, b) => {
+        if (!a.task.dueDate && b.task.dueDate) return 1;
+        if (a.task.dueDate && !b.task.dueDate) return -1;
+        return (a.task.dueDate || '').localeCompare(b.task.dueDate || '') || a.incident.date.localeCompare(b.incident.date);
+      });
+  }, [followUps, incidents, followUpSiteFilter, followUpOwnerFilter, followUpStatusFilter, followUpDueFilter]);
+  const overdueFollowUpCount = followUps.filter((task) => task.status !== 'Complete' && task.dueDate && task.dueDate < localDateKey()).length;
+
   const filteredIncidents = useMemo(() => incidents.filter((incident) => {
     const text = `${incident.id} ${incident.title} ${incident.site} ${incident.area} ${incident.asset} ${incident.owner}`.toLowerCase();
     return text.includes(query.toLowerCase())
@@ -488,6 +597,15 @@ function App() {
   }), [incidents, query, categoryFilter, severityFilter, statusFilter, registerPreset]);
 
   const openIncident = (incident) => setSelected(incident);
+  function showRegister({ preset = 'All incidents', category = 'All categories', severity = 'All severities' } = {}) {
+    setQuery('');
+    setCategoryFilter(category);
+    setSeverityFilter(severity);
+    setStatusFilter('All statuses');
+    setRegisterPreset(preset);
+    navigatePage('register');
+  }
+
   const updateIncident = (id, changes) => {
     const existing = incidents.find((incident) => incident.id === id);
     if (changes.status && existing && existing.status !== changes.status) {
@@ -577,10 +695,10 @@ function App() {
       </div>
       <div className="demo-banner"><span className="demo-mark">D</span><span><strong>Demonstration environment</strong><span>All incidents, insights and recommendations on this screen use sample data.</span></span><Icon name="arrow" size={16} /></div>
       <section className="metric-grid" aria-label="Incident summary">
-        <Metric label="Recorded incidents" value={incidents.length} foot="Across 3 operational sites" icon="list" accent="mint" />
-        <Metric label="Open incidents" value={openCount} foot="Require review or follow-up" icon="clock" accent="blue" />
-        <Metric label="High severity" value={highCount} foot="Competent review required" icon="alert" accent="peach" />
-        <Metric label="Recurring incidents" value={recurringCount} foot={`${recurringMatches.length} repeated asset patterns`} icon="repeat" accent="lilac" />
+        <Metric label="Recorded incidents" value={incidents.length} foot="Across 3 operational sites" icon="list" accent="mint" ariaLabel="View all recorded incidents" onClick={() => showRegister()} />
+        <Metric label="Open incidents" value={openCount} foot="Require review or follow-up" icon="clock" accent="blue" ariaLabel="View open incidents" onClick={() => showRegister({ preset: 'Open' })} />
+        <Metric label="High severity" value={highCount} foot="Competent review required" icon="alert" accent="peach" ariaLabel="View high-severity incidents" onClick={() => showRegister({ severity: 'High' })} />
+        <Metric label="Recurring incidents" value={recurringCount} foot={`${recurringMatches.length} repeated asset patterns`} icon="repeat" accent="lilac" ariaLabel="View recurring incidents" onClick={() => showRegister({ preset: 'Recurring' })} />
       </section>
       <section className="dashboard-grid">
         <div className="card trend-card">
@@ -597,7 +715,7 @@ function App() {
         </div>
         <div className="card category-card">
           <div className="card-head"><div><h2>Incidents by category</h2><p>Current reporting period</p></div><span className="mini-icon"><Icon name="grid" /></span></div>
-          <div className="category-list">{categoryCounts.filter((item) => item.count).map(({ category, count }) => <div className="category-item" key={category}><div className="category-label"><span>{category}</span><strong>{count}</strong></div><div className="progress-track"><span style={{ width: `${Math.max(10, (count / maxCategory) * 100)}%` }} /></div></div>)}</div>
+          <div className="category-list">{categoryCounts.filter((item) => item.count).map(({ category, count }) => <button className="category-item category-item-button" key={category} aria-label={`View ${count} ${category} incidents`} onClick={() => showRegister({ category })}><span className="category-label"><span>{category}</span><strong>{count}</strong></span><span className="progress-track"><span style={{ width: `${Math.max(10, (count / maxCategory) * 100)}%` }} /></span></button>)}</div>
           <button className="text-link" onClick={() => navigatePage('register')}>View incident register <Icon name="chevron" size={15} /></button>
         </div>
       </section>
@@ -641,6 +759,103 @@ function App() {
         {!filteredIncidents.length && <div className="empty-state"><span className="empty-icon"><Icon name="search" /></span><strong>No incidents match these filters</strong><span>Try a different search term or clear a filter.</span><button className="text-link" onClick={() => { setQuery(''); setCategoryFilter('All categories'); setSeverityFilter('All severities'); setStatusFilter('All statuses'); setRegisterPreset('All incidents'); }}>Clear filters</button></div>}
       </div>
       <div className="table-footnote"><Icon name="alert" size={15} /> Sample data for presentation purposes only. Newly reported records are saved to this browser session.</div>
+    </div>;
+  }
+
+  function updateTrackerTask(taskId, field, value) {
+    setFollowUps((current) => current.map((task) => {
+      if (task.id !== taskId) return task;
+      const updated = { ...task, [field]: value, updatedAt: new Date().toISOString() };
+      if (field === 'status' && value !== 'Complete') updated.effectiveness = 'Not verified';
+      return updated;
+    }));
+  }
+
+  function addFollowUpTask(event) {
+    event.preventDefault();
+    const incident = incidents.find((item) => item.id === newFollowUpIncidentId);
+    if (!incident || !newFollowUpAction.trim()) return;
+    setFollowUps((current) => [...current, {
+      id: `follow-up-${incident.id}-${Date.now()}`,
+      incidentId: incident.id,
+      action: newFollowUpAction.trim(),
+      owner: 'Unassigned',
+      dueDate: '',
+      status: 'Not scheduled',
+      effectiveness: 'Not verified',
+      updatedAt: new Date().toISOString(),
+    }]);
+    setFollowUpSiteFilter('All sites');
+    setFollowUpOwnerFilter('All owners');
+    setFollowUpStatusFilter('All statuses');
+    setFollowUpDueFilter('All due dates');
+    setShowFollowUpForm(false);
+  }
+
+  function renderFollowUp() {
+    const openCount = followUps.filter((task) => task.status !== 'Complete').length;
+    const unscheduledCount = followUps.filter((task) => task.status !== 'Complete' && !task.dueDate).length;
+    const verificationCount = followUps.filter((task) => task.status === 'Complete' && task.effectiveness !== 'Verified').length;
+    const dueLabel = (task) => {
+      if (task.status === 'Complete') return 'Action complete';
+      if (!task.dueDate) return 'No due date';
+      const today = localDateKey();
+      if (task.dueDate < today) return 'Overdue';
+      if (task.dueDate === today) return 'Due today';
+      const days = Math.round((new Date(`${task.dueDate}T12:00:00`) - new Date(`${today}T12:00:00`)) / 86400000);
+      return days <= 7 ? `Due in ${days} days` : formatDate(task.dueDate);
+    };
+    const today = localDateKey();
+    const urgencyGroups = [
+      { title: 'Overdue', rows: filteredFollowUps.filter(({ task }) => task.status !== 'Complete' && task.dueDate && task.dueDate < today) },
+      { title: 'Due soon', rows: filteredFollowUps.filter(({ task }) => task.status !== 'Complete' && task.dueDate && task.dueDate >= today && dueLabel(task).startsWith('Due')) },
+      { title: 'Unscheduled', rows: filteredFollowUps.filter(({ task }) => task.status !== 'Complete' && !task.dueDate) },
+      { title: 'Scheduled', rows: filteredFollowUps.filter(({ task }) => task.status !== 'Complete' && task.dueDate && task.dueDate >= today && !dueLabel(task).startsWith('Due')) },
+      { title: 'Complete', rows: filteredFollowUps.filter(({ task }) => task.status === 'Complete') },
+    ].filter((group) => group.rows.length);
+    return <div className="page-content">
+      <div className="page-heading"><div><div className="eyebrow">INCIDENT MANAGEMENT</div><h1>Follow-up tracker</h1><p>Assign, schedule and review follow-up actions linked to incident records.</p></div><Badge tone="neutral">Browser session</Badge></div>
+      <div className="follow-up-demo-note"><Icon name="alert" size={16} /><span><strong>Illustrative tracker data.</strong> Actions are editable examples saved only in this browser session; they are not real assignments or verified work.</span></div>
+      <div className="follow-up-status-note"><strong>How completion works:</strong> Complete means the assigned action is done. Effectiveness is a separate review to confirm the change worked; it should only be marked verified when there is supporting evidence.</div>
+      <section className="follow-up-summary" aria-label="Follow-up summary">
+        <div className="follow-up-summary-card"><span>OPEN ACTIONS</span><strong>{openCount}</strong><small>Not marked complete</small></div>
+        <div className="follow-up-summary-card follow-up-summary-warning"><span>OVERDUE</span><strong>{overdueFollowUpCount}</strong><small>Open actions past their due date</small></div>
+        <div className="follow-up-summary-card"><span>NEED EFFECTIVENESS REVIEW</span><strong>{verificationCount}</strong><small>Complete does not mean verified</small></div>
+        <div className="follow-up-summary-card"><span>UNSCHEDULED</span><strong>{unscheduledCount}</strong><small>Assign an owner and due date</small></div>
+      </section>
+      <section className="follow-up-filters" aria-label="Filter follow-up actions">
+        <label><span>Site</span><select aria-label="Filter follow-ups by site" value={followUpSiteFilter} onChange={(event) => setFollowUpSiteFilter(event.target.value)}><option>All sites</option>{followUpSites.map((site) => <option key={site}>{site}</option>)}</select></label>
+        <label><span>Owner</span><select aria-label="Filter follow-ups by owner" value={followUpOwnerFilter} onChange={(event) => setFollowUpOwnerFilter(event.target.value)}><option>All owners</option>{followUpOwners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
+        <label><span>Action status</span><select aria-label="Filter follow-ups by status" value={followUpStatusFilter} onChange={(event) => setFollowUpStatusFilter(event.target.value)}><option>All statuses</option>{['Not scheduled', 'Planned', 'In progress', 'Awaiting verification', 'Complete'].map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label><span>Due date</span><select aria-label="Filter follow-ups by due date" value={followUpDueFilter} onChange={(event) => setFollowUpDueFilter(event.target.value)}><option>All due dates</option><option>Overdue</option><option>Due in 7 days</option><option>No due date</option><option>Complete</option></select></label>
+      </section>
+      <div className="follow-up-list-toolbar"><div className="follow-up-list-heading"><strong>{filteredFollowUps.length} follow-up {filteredFollowUps.length === 1 ? 'action' : 'actions'}</strong><span>Grouped by urgency</span></div><div className="follow-up-quick-filters"><button type="button" className="button button-secondary" onClick={() => { setFollowUpOwnerFilter('Unassigned'); setFollowUpDueFilter('All due dates'); }}>Show unassigned</button><button type="button" className="button button-secondary" onClick={() => { setFollowUpDueFilter('No due date'); setFollowUpOwnerFilter('All owners'); }}>Show no due date</button><button type="button" className="button button-primary" onClick={() => setShowFollowUpForm((shown) => !shown)}>{showFollowUpForm ? 'Cancel' : 'Add follow-up action'}</button></div></div>
+      {showFollowUpForm && <form className="follow-up-create-form" onSubmit={addFollowUpTask}>
+        <div className="follow-up-create-heading"><strong>Add an action linked to an incident</strong><span>New actions start unassigned and unscheduled so an owner and target date can be confirmed.</span></div>
+        <label><span>Incident</span><select required value={newFollowUpIncidentId} onChange={(event) => { const incidentId = event.target.value; setNewFollowUpIncidentId(incidentId); const incident = incidents.find((item) => item.id === incidentId); if (incident) setNewFollowUpAction(suggestedFollowUpAction(incident)); }}>{incidents.map((incident) => <option key={incident.id} value={incident.id}>{incident.id} · {incident.title}</option>)}</select></label>
+        <label className="follow-up-create-action"><span>Follow-up action</span><textarea required rows="2" value={newFollowUpAction} onChange={(event) => setNewFollowUpAction(event.target.value)} /></label>
+        <button type="submit" className="button button-primary">Add action</button>
+      </form>}
+      <section className="follow-up-list" aria-label="Follow-up actions">
+        {urgencyGroups.map(({ title, rows }) => <div className={`follow-up-urgency-group follow-up-urgency-${title.toLowerCase().replace(' ', '-')}`} key={title}>
+          <h2><span>{title}</span><span>{rows.length}</span></h2>
+          {rows.map(({ task, incident }) => <article className="follow-up-card card" key={task.id}>
+          <div className="follow-up-card-heading">
+            <div className="follow-up-incident"><span className="follow-up-incident-id">{incident.id}</span><button className="record-link" onClick={() => openIncident(incident)}>{incident.title}<Icon name="arrow" size={13} /></button><span className="follow-up-site">{incident.site} · {incident.area}</span></div>
+            <div className="follow-up-badges"><Badge tone={severityTone(incident.severity)}>{incident.severity}</Badge><Badge tone={statusTone(incident.status)}>Incident · {incident.status}</Badge></div>
+          </div>
+          <div className="follow-up-fields">
+            <label className="follow-up-action-field"><span>Follow-up action</span><input aria-label={`Follow-up action for ${incident.id}`} value={task.action} onChange={(event) => updateTrackerTask(task.id, 'action', event.target.value)} /></label>
+            <label><span>Owner</span><input aria-label={`Follow-up owner for ${incident.id}`} value={task.owner} placeholder="Assign an owner" onChange={(event) => updateTrackerTask(task.id, 'owner', event.target.value)} /></label>
+            <label><span>Target date</span><input aria-label={`Follow-up target date for ${incident.id}`} type="date" value={task.dueDate} onChange={(event) => updateTrackerTask(task.id, 'dueDate', event.target.value)} /></label>
+            <label><span>Action status</span><select aria-label={`Follow-up status for ${incident.id}`} value={task.status} onChange={(event) => updateTrackerTask(task.id, 'status', event.target.value)}>{['Not scheduled', 'Planned', 'In progress', 'Awaiting verification', 'Complete'].map((status) => <option key={status}>{status}</option>)}</select></label>
+            <label><span>Effectiveness</span><select aria-label={`Effectiveness verification for ${incident.id}`} value={task.effectiveness} disabled={task.status !== 'Complete'} onChange={(event) => updateTrackerTask(task.id, 'effectiveness', event.target.value)}><option>Not verified</option><option>Verified</option></select><small className="follow-up-field-hint">{task.status === 'Complete' ? 'Separate evidence-based review' : 'Available after action completion'}</small></label>
+          </div>
+          <div className="follow-up-card-footer"><span className={`follow-up-due ${dueLabel(task) === 'Overdue' ? 'follow-up-due-overdue' : ''}`}><Icon name="clock" size={14} />{dueLabel(task)}</span><div className="follow-up-attention-flags">{isUnassignedFollowUp(task) && <span>Owner needed</span>}{!task.dueDate && <span>Target date needed</span>}</div><span className="follow-up-effectiveness-note">{task.status === 'Complete' && task.effectiveness !== 'Verified' ? 'Effectiveness still needs verification' : task.effectiveness === 'Verified' ? 'Effectiveness verified' : 'Verification follows action completion'}</span><button className="button button-secondary follow-up-view" onClick={() => openIncident(incident)}>View incident</button></div>
+        </article>)}
+        </div>)}
+        {filteredFollowUps.length === 0 && <div className="card empty-state"><span className="empty-icon"><Icon name="check" /></span><strong>No follow-up actions match these filters</strong><span>Try adjusting a filter to see other actions.</span><button className="text-link" onClick={() => { setFollowUpSiteFilter('All sites'); setFollowUpOwnerFilter('All owners'); setFollowUpStatusFilter('All statuses'); setFollowUpDueFilter('All due dates'); }}>Clear filters</button></div>}
+      </section>
     </div>;
   }
 
@@ -864,19 +1079,21 @@ function App() {
   }
 
   const title = navItems.find((item) => item.id === page)?.label || (page === 'report' ? 'New incident report' : page === 'analysis' ? 'Incident analysis' : page === 'analyzing' ? 'AI analysing request' : 'SiteGuard Intelligence');
+  const effectivenessReviewCount = followUps.filter((task) => task.status === 'Complete' && task.effectiveness !== 'Verified').length;
   return <div className={`app-shell ${dark ? 'theme-dark' : ''}`}>
     <aside className="sidebar">
       <button className="brand" onClick={() => navigatePage('dashboard')} aria-label="SiteGuard Intelligence home"><span className="brand-mark"><Icon name="shield" size={21} /></span><span className="brand-copy"><strong>SiteGuard</strong><small>INTELLIGENCE</small></span></button>
       <div className="workspace-label">WORKSPACE</div><div className="site-switcher"><span className="site-switcher-icon"><Icon name="grid" size={16} /></span><span><strong>All operations</strong><small>UK · 3 active sites</small></span><Icon name="chevron" size={15} /></div>
-      <div className="nav-label">OPERATIONS</div><nav className="main-nav" aria-label="Main navigation">{navItems.map((item) => <button key={item.id} aria-label={item.label} title={item.label} className={`nav-item ${page === item.id ? 'nav-active' : ''}`} onClick={() => navigatePage(item.id)}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'recurrence' && recurringMatches.length > 0 && <span className="nav-count">{recurringMatches.length}</span>}</button>)}</nav>
+      <div className="nav-label">OPERATIONS</div><nav className="main-nav" aria-label="Main navigation">{navItems.map((item) => <button key={item.id} aria-label={item.label} title={item.label} className={`nav-item ${page === item.id ? 'nav-active' : ''}`} onClick={() => navigatePage(item.id)}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'recurrence' && recurringMatches.length > 0 && <span className="nav-count">{recurringMatches.length}</span>}{item.id === 'follow-up' && overdueFollowUpCount > 0 && <span className="nav-count">{overdueFollowUpCount}</span>}</button>)}</nav>
       <div className="sidebar-spacer" />
       <div className="sidebar-safety"><span><Icon name="shield" size={17} /></span><div><strong>Safety guidance</strong><p>AI suggestions need competent human review.</p></div></div>
       <div className="profile"><span className="profile-avatar">SC</span><span><strong>Site Coordinator</strong><small>Demo workspace</small></span><button className="icon-button profile-menu" onClick={() => setNotice('Signed in as Site Coordinator · Demo workspace.')} aria-label="Show profile details"><span>···</span></button></div>
     </aside>
     <main className="main-area">
-      <header className="topbar"><div className="breadcrumbs"><span>SiteGuard</span><Icon name="chevron" size={14} /><strong>{title}</strong></div><div className="topbar-actions"><span className="environment-chip"><i /> Demo environment</span><button className="icon-button theme-button" onClick={() => setDark((value) => !value)} aria-label={`Switch to ${dark ? 'light' : 'dark'} theme`} title={`Switch to ${dark ? 'light' : 'dark'} theme`}><Icon name="sun" size={18} /></button><button className="icon-button notification-button" onClick={() => setNotice('No new notifications in this demo session.')} aria-label="Notifications"><Icon name="bell" size={18} /><i /></button><span className="top-avatar">SC</span></div></header>
+      <header className="topbar"><div className="breadcrumbs"><span>SiteGuard</span><Icon name="chevron" size={14} /><strong>{title}</strong></div><div className="topbar-actions"><span className="environment-chip"><i /> Demo environment</span><button className="icon-button theme-button" onClick={() => setDark((value) => !value)} aria-label={`Switch to ${dark ? 'light' : 'dark'} theme`} title={`Switch to ${dark ? 'light' : 'dark'} theme`}><Icon name={dark ? 'sun' : 'moon'} size={18} /></button><button className="icon-button notification-button" onClick={() => setNotice('No new notifications in this demo session.')} aria-label="Notifications"><Icon name="bell" size={18} /><i /></button><span className="top-avatar">SC</span></div></header>
       {page === 'dashboard' && renderDashboard()}
       {page === 'register' && renderRegister()}
+      {page === 'follow-up' && renderFollowUp()}
       {page === 'report' && renderReport()}
       {page === 'analyzing' && renderAnalyzing()}
       {page === 'analysis' && renderAnalysis()}
@@ -900,8 +1117,11 @@ function App() {
   </div>;
 }
 
-function Metric({ label, value, foot, icon, accent }) {
-  return <div className="metric-card"><span className={`metric-icon ${accent}`}><Icon name={icon} size={18} /></span><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-foot">{foot}</span></div>;
+function Metric({ label, value, foot, icon, accent, ariaLabel, onClick }) {
+  const content = <><span className={`metric-icon ${accent}`}><Icon name={icon} size={18} /></span><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-foot">{foot}</span></>;
+  return onClick
+    ? <button className="metric-card metric-card-action" aria-label={ariaLabel} onClick={onClick}>{content}</button>
+    : <div className="metric-card">{content}</div>;
 }
 
 function IncidentTable({ incidents, onSelect, compact = false }) {
