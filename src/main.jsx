@@ -278,6 +278,12 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState('All categories');
   const [severityFilter, setSeverityFilter] = useState('All severities');
   const [statusFilter, setStatusFilter] = useState('All statuses');
+  const [recurrenceSiteFilter, setRecurrenceSiteFilter] = useState('All sites');
+  const [recurrenceSeverityFilter, setRecurrenceSeverityFilter] = useState('All severities');
+  const [recurrenceRange, setRecurrenceRange] = useState('Any time');
+  const [recurrenceSort, setRecurrenceSort] = useState('Most reports');
+  const [selectedRecurrenceKey, setSelectedRecurrenceKey] = useState('');
+  const [recurrenceQuery, setRecurrenceQuery] = useState('');
   const [analysis, setAnalysis] = useState(null);
   const [assistantMessages, setAssistantMessages] = useState([]);
   const [assistantQuestion, setAssistantQuestion] = useState('');
@@ -430,6 +436,44 @@ function App() {
     return [...groups.values()].filter((group) => group.length > 1)
       .map((group) => group.sort((a, b) => b.date.localeCompare(a.date)));
   }, [incidents]);
+
+  const recurrenceSites = useMemo(
+    () => [...new Set(recurringMatches.map((group) => group[0].site))].sort(),
+    [recurringMatches],
+  );
+  const recurrenceWorklist = useMemo(() => {
+    const rangeDays = { 'Any time': Infinity, 'Last 30 days': 30, 'Last 90 days': 90, 'Last year': 365 }[recurrenceRange];
+    const cutoff = new Date();
+    cutoff.setHours(12, 0, 0, 0);
+    if (rangeDays !== Infinity) cutoff.setDate(cutoff.getDate() - rangeDays);
+    return recurringMatches
+      .map((group) => {
+        const ordered = [...group].sort((a, b) => a.date.localeCompare(b.date));
+        const first = ordered[0];
+        const latest = ordered.at(-1);
+        return {
+          key: `${first.site}|${first.asset}|${first.category}`,
+          group,
+          ordered,
+          first,
+          latest,
+          highSeverity: group.some((incident) => incident.severity === 'High'),
+          days: Math.max(0, Math.round((new Date(`${latest.date}T12:00:00`) - new Date(`${first.date}T12:00:00`)) / 86400000)),
+        };
+      })
+      .filter(({ group, latest, highSeverity }) => {
+        const matchesQuery = `${group[0].site} ${group[0].area} ${group[0].asset} ${group[0].category} ${group[0].title}`.toLowerCase().includes(recurrenceQuery.trim().toLowerCase());
+        const matchesRange = rangeDays === Infinity || new Date(`${latest.date}T12:00:00`) >= cutoff;
+        return matchesQuery
+          && matchesRange
+          && (recurrenceSiteFilter === 'All sites' || group[0].site === recurrenceSiteFilter)
+          && (recurrenceSeverityFilter === 'All severities' || (recurrenceSeverityFilter === 'High' ? highSeverity : !highSeverity));
+      })
+      .sort((a, b) => recurrenceSort === 'Latest report'
+        ? b.latest.date.localeCompare(a.latest.date)
+        : b.group.length - a.group.length || b.latest.date.localeCompare(a.latest.date));
+  }, [recurringMatches, incidents, recurrenceRange, recurrenceQuery, recurrenceSiteFilter, recurrenceSeverityFilter, recurrenceSort]);
+  const selectedRecurrence = recurrenceWorklist.find(({ key }) => key === selectedRecurrenceKey) || recurrenceWorklist[0] || null;
 
   const filteredIncidents = useMemo(() => incidents.filter((incident) => {
     const text = `${incident.id} ${incident.title} ${incident.site} ${incident.area} ${incident.asset} ${incident.owner}`.toLowerCase();
@@ -783,21 +827,39 @@ function App() {
 
   function renderRecurrence() {
     return <div className="page-content">
-      <div className="page-heading"><div><div className="eyebrow">PATTERNS &amp; FOLLOW-UP</div><h1>Recurrence intelligence</h1><p>Repeated demo incidents grouped by site, asset and category for human investigation.</p></div><Badge tone="neutral">Rules-based demo</Badge></div>
-      <div className="demo-banner"><span className="demo-mark">D</span><span><strong>Matching is not root-cause analysis</strong><span>Groups show repeated site–asset–category patterns. They do not prove a shared cause or failed repair.</span></span><Icon name="alert" size={16} /></div>
-      <section className="metric-grid recurrence-metrics"><Metric label="Repeated patterns" value={recurringMatches.length} foot="Site · asset · category groups" icon="repeat" accent="lilac" /><Metric label="Reports in patterns" value={recurringMatches.reduce((sum, group) => sum + group.length, 0)} foot="Across the demonstration dataset" icon="list" accent="mint" /><Metric label="Follow-up not verified" value={recurringMatches.length} foot="Outcomes need competent review" icon="alert" accent="peach" /></section>
-      <div className="recurrence-list">{recurringMatches.map((group) => {
-        const ordered = [...group].sort((a, b) => a.date.localeCompare(b.date));
-        const days = ordered.length > 1 ? Math.max(0, Math.round((new Date(`${ordered.at(-1).date}T12:00:00`) - new Date(`${ordered[0].date}T12:00:00`)) / 86400000)) : 0;
-        return <div className="card recurrence-card" key={`${group[0].site}-${group[0].asset}`}>
-          <div className="recurrence-card-head"><div className="asset-round"><Icon name="repeat" /></div><div className="recurrence-title"><span className="eyebrow">{group[0].site} · {group[0].area}</span><h2>{group[0].asset} · {group[0].title.replace(/ at .*/, '')}</h2><p>{group[0].category} pattern · {group.length} reported incidents</p></div><Badge tone="amber">{group.length}× repeat</Badge></div>
-          <div className="recurrence-stats"><div><span>REPEAT FREQUENCY</span><strong>{group.length} reports</strong></div><div><span>TIME BETWEEN FIRST &amp; LAST</span><strong>{days} days</strong></div><div><span>LAST REPORTED</span><strong>{formatDate(ordered.at(-1).date)}</strong></div></div>
-          <div className="timeline">{ordered.map((incident, index) => <div className="timeline-item" key={incident.id}><span className={`timeline-dot ${index === ordered.length - 1 ? 'timeline-dot-current' : ''}`} /><span className="timeline-date">{formatDate(incident.date)}</span><button className="record-link" onClick={() => openIncident(incident)}>{incident.id} <Icon name="arrow" size={13} /></button><span className="timeline-desc">{incident.title}</span><Badge tone={severityTone(incident.severity)}>{incident.severity}</Badge></div>)}</div>
-          <div className="recurrence-insight-grid"><div><strong>Previously recorded measures</strong><p>{[...new Set(group.map((item) => item.corrective))].join(' / ')}</p></div><div><strong>Possible unresolved causes · hypotheses</strong><p>{group[0].asset === 'CV-04' ? 'Lubrication adequacy, bearing condition, alignment, contamination or operating load warrant checking. Earlier temperature recovery alone does not confirm lasting resolution.' : 'Repair effectiveness, coupling / seal condition and hose integrity warrant checking. The prior immediate post-repair check does not confirm longer-term resolution.'}</p></div><div><strong>Recommended follow-up</strong><p>Compare work orders and inspection records, verify the current condition safely, and document the outcome and effectiveness check.</p></div></div>
-          <button className="text-link recurrence-view" onClick={() => openIncident(ordered.at(-1))}>Review latest incident and history <Icon name="chevron" size={15} /></button>
-        </div>;
-      })}{!recurringMatches.length && <div className="card empty-state"><span className="empty-icon"><Icon name="repeat" /></span><strong>No repeated patterns in this session yet</strong><span>As similar demo incidents are reported, patterns will appear here.</span></div>}</div>
-      <div className="safety-note"><Icon name="shield" size={17} /><span>Patterns are review prompts, not confirmed failure modes. Competent staff must verify causes, corrective measures and safe operating decisions.</span></div>
+      <div className="page-heading"><div><div className="eyebrow">PATTERNS &amp; FOLLOW-UP</div><h1>Recurrence workbench</h1><p>Prioritize repeated incident patterns and review their history.</p></div><Badge tone="neutral">Rules-based demo</Badge></div>
+      <div className="recurrence-caveat"><Icon name="alert" size={17} /><span><strong>Recurrence is a review prompt, not proof of a shared cause.</strong> Verify conditions and corrective actions with competent staff.</span></div>
+      <section className="recurrence-controls" aria-label="Filter recurrence patterns">
+        <label className="recurrence-search"><Icon name="search" size={16} /><input aria-label="Search patterns" placeholder="Search site, asset or category" value={recurrenceQuery} onChange={(event) => setRecurrenceQuery(event.target.value)} /></label>
+        <label><span>Site</span><select aria-label="Filter by site" value={recurrenceSiteFilter} onChange={(event) => setRecurrenceSiteFilter(event.target.value)}><option>All sites</option>{recurrenceSites.map((site) => <option key={site}>{site}</option>)}</select></label>
+        <label><span>Severity</span><select aria-label="Filter by severity" value={recurrenceSeverityFilter} onChange={(event) => setRecurrenceSeverityFilter(event.target.value)}><option>All severities</option><option>High</option><option>Not high</option></select></label>
+        <label><span>Reported</span><select aria-label="Filter by reporting period" value={recurrenceRange} onChange={(event) => setRecurrenceRange(event.target.value)}><option>Any time</option><option>Last 30 days</option><option>Last 90 days</option><option>Last year</option></select></label>
+        <label><span>Sort by</span><select aria-label="Sort patterns" value={recurrenceSort} onChange={(event) => setRecurrenceSort(event.target.value)}><option>Most reports</option><option>Latest report</option></select></label>
+      </section>
+      <div className="recurrence-results-summary"><strong>{recurrenceWorklist.length}</strong> {recurrenceWorklist.length === 1 ? 'pattern' : 'patterns'} shown of {recurringMatches.length} <span>·</span> {recurrenceWorklist.reduce((sum, pattern) => sum + pattern.group.length, 0)} linked reports</div>
+      {recurringMatches.length === 0
+        ? <div className="card empty-state"><span className="empty-icon"><Icon name="repeat" /></span><strong>No repeated patterns in this session yet</strong><span>As similar incidents are reported, patterns will appear here.</span></div>
+        : <div className="recurrence-workbench">
+          <section className="recurrence-patterns card" aria-label="Repeated incident patterns">
+            <div className="recurrence-panel-heading"><h2>Patterns to review</h2><span>Ranked by {recurrenceSort === 'Most reports' ? 'report count' : 'latest report'}</span></div>
+            {recurrenceWorklist.map((pattern, index) => <button key={pattern.key} className={`recurrence-pattern ${selectedRecurrence?.key === pattern.key ? 'recurrence-pattern-selected' : ''}`} aria-pressed={selectedRecurrence?.key === pattern.key} onClick={() => setSelectedRecurrenceKey(pattern.key)}>
+              <span className="recurrence-rank">{String(index + 1).padStart(2, '0')}</span>
+              <span className="recurrence-pattern-copy"><strong>{pattern.first.asset} · {pattern.first.title.replace(/ at .*/, '')}</strong><span>{pattern.first.site} · {pattern.first.area}</span><small>{pattern.first.category} · Latest {formatDate(pattern.latest.date)}</small></span>
+              <span className="recurrence-pattern-meta"><b>{pattern.group.length}×</b>{pattern.highSeverity && <Badge tone="red">High</Badge>}</span>
+            </button>)}
+            {recurrenceWorklist.length === 0 && <div className="recurrence-filter-empty"><strong>No patterns match these filters.</strong><span>Try widening the date range or changing your filters.</span></div>}
+          </section>
+          {selectedRecurrence && <section className="recurrence-detail card" aria-label="Selected recurrence pattern">
+            <div className="recurrence-detail-head"><div><div className="eyebrow">{selectedRecurrence.first.site} · {selectedRecurrence.first.area}</div><h2>{selectedRecurrence.first.asset} · {selectedRecurrence.first.title.replace(/ at .*/, '')}</h2><p>{selectedRecurrence.first.category} pattern · {selectedRecurrence.group.length} linked incidents</p></div><div className="recurrence-detail-badges"><Badge tone="blue">Review recommended</Badge><Badge tone={statusTone(selectedRecurrence.latest.status)}>Latest record · {selectedRecurrence.latest.status}</Badge></div></div>
+            <div className="recurrence-detail-stats"><div><span>REPORTS</span><strong>{selectedRecurrence.group.length}</strong></div><div><span>FIRST REPORTED</span><strong>{formatDate(selectedRecurrence.first.date)}</strong></div><div><span>MOST RECENT</span><strong>{formatDate(selectedRecurrence.latest.date)}</strong></div><div><span>TIME SPAN</span><strong>{selectedRecurrence.days} days</strong></div></div>
+            <div className="recurrence-history-heading"><div><h3>Incident history</h3><p>Select a report to review its full record.</p></div><span>{selectedRecurrence.group.length} reports</span></div>
+            <div className="timeline">{selectedRecurrence.ordered.map((incident, index) => <button className={`timeline-item ${index === selectedRecurrence.ordered.length - 1 ? 'timeline-item-current' : ''}`} key={incident.id} onClick={() => openIncident(incident)}>
+              <span className={`timeline-dot ${index === selectedRecurrence.ordered.length - 1 ? 'timeline-dot-current' : ''}`} /><span className="timeline-date">{formatDate(incident.date)}</span><span className="record-link">{incident.id} <Icon name="arrow" size={13} /></span><span className="timeline-desc">{incident.title}</span><Badge tone={severityTone(incident.severity)}>{incident.severity}</Badge>
+            </button>)}</div>
+            <div className="recurrence-followup"><span className="recurrence-followup-icon"><Icon name="shield" size={17} /></span><div><strong>Follow-up: review recommended</strong><p>Compare the prior measures with current inspection and work-order records. The pattern alone does not verify cause or lasting resolution.</p></div><button className="button button-primary" onClick={() => openIncident(selectedRecurrence.latest)}>Review latest report <Icon name="arrow" size={14} /></button></div>
+            <div className="recurrence-insight-grid"><div><strong>Previously recorded measures</strong><p>{[...new Set(selectedRecurrence.group.map((item) => item.corrective))].join(' / ')}</p></div><div><strong>Possible causes · hypotheses only</strong><p>{selectedRecurrence.first.asset === 'CV-04' ? 'Check lubrication, bearing condition, alignment, contamination and operating load.' : 'Check repair effectiveness, coupling / seal condition and hose integrity.'}</p></div><div><strong>Recommended next step</strong><p>Verify the current condition safely, compare records and document the outcome and effectiveness check.</p></div></div>
+          </section>}
+        </div>}
     </div>;
   }
 
